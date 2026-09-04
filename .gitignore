@@ -1,0 +1,16 @@
+# Large dataset
+export.csv
+
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.venv/
+venv/
+
+# Secrets
+.env
