@@ -1,0 +1,76 @@
+{
+  "input_features": [
+    "Agency",
+    "Agency Name",
+    "Problem (formerly Complaint Type)",
+    "Problem Detail (formerly Descriptor)",
+    "Location Type",
+    "Incident Zip",
+    "City",
+    "Borough",
+    "Community Board",
+    "Council District",
+    "Police Precinct",
+    "Open Data Channel Type",
+    "Latitude",
+    "Longitude",
+    "Due Date",
+    "Created_Year",
+    "Created_Month",
+    "Created_Day",
+    "Created_DayOfWeek",
+    "Project Issue Category"
+  ],
+  "numerical_features": [
+    "Council District",
+    "Latitude",
+    "Longitude",
+    "Created_Year",
+    "Created_Month",
+    "Created_Day"
+  ],
+  "categorical_features": [
+    "Agency",
+    "Agency Name",
+    "Problem (formerly Complaint Type)",
+    "Problem Detail (formerly Descriptor)",
+    "Location Type",
+    "Incident Zip",
+    "City",
+    "Borough",
+    "Community Board",
+    "Police Precinct",
+    "Open Data Channel Type",
+    "Due Date",
+    "Created_DayOfWeek",
+    "Project Issue Category"
+  ],
+  "project_issue_category_mapping": {
+    "Noise": [
+      "Noise"
+    ],
+    "Parking": [
+      "Illegal Parking"
+    ],
+    "Water Issue": [
+      "Water Maintenance"
+    ],
+    "Street Condition": [
+      "Noise - Street/Sidewalk"
+    ],
+    "Garbage / Waste": [
+      "Dirty Conditions"
+    ],
+    "Street Lighting": [
+      "Street Light Condition"
+    ]
+  },
+  "target": "Resolution Days",
+  "training_filter": "Status == Closed; valid dates; non-negative duration",
+  "excluded_features": [
+    "Status",
+    "Created Date",
+    "Closed Date"
+  ],
+  "sklearn_version": "1.6.1"
+}
