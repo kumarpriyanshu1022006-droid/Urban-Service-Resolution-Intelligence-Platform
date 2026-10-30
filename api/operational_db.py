@@ -153,6 +153,9 @@ def init_operational_db():
                 evidence_url TEXT,
                 latitude REAL,
                 longitude REAL,
+                location_source TEXT DEFAULT 'UNVERIFIED',
+                gps_accuracy REAL,
+                normalized_address TEXT,
                 status TEXT NOT NULL DEFAULT 'Submitted' CHECK(
                     status IN (
                         'Submitted',
@@ -186,7 +189,11 @@ def init_operational_db():
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 resolved_at TEXT,
-                closed_at TEXT
+                closed_at TEXT,
+                canonical_complaint_id INTEGER REFERENCES complaints(id),
+                duplicate_status TEXT NOT NULL DEFAULT 'NONE' CHECK(
+                    duplicate_status IN ('NONE', 'CANDIDATE', 'DUPLICATE', 'CANONICAL')
+                )
             );
             """)
 
@@ -199,6 +206,25 @@ def init_operational_db():
                 cursor.execute("UPDATE complaints SET suggested_priority = priority WHERE suggested_priority IS NULL;")
             if "priority_override_reason" not in columns:
                 cursor.execute("ALTER TABLE complaints ADD COLUMN priority_override_reason TEXT;")
+            if "location_source" not in columns:
+                cursor.execute("ALTER TABLE complaints ADD COLUMN location_source TEXT DEFAULT 'UNVERIFIED';")
+            if "gps_accuracy" not in columns:
+                cursor.execute("ALTER TABLE complaints ADD COLUMN gps_accuracy REAL;")
+            if "normalized_address" not in columns:
+                cursor.execute("ALTER TABLE complaints ADD COLUMN normalized_address TEXT;")
+            if "canonical_complaint_id" not in columns:
+                cursor.execute("ALTER TABLE complaints ADD COLUMN canonical_complaint_id INTEGER REFERENCES complaints(id);")
+            if "duplicate_status" not in columns:
+                cursor.execute("ALTER TABLE complaints ADD COLUMN duplicate_status TEXT DEFAULT 'NONE';")
+                cursor.execute("UPDATE complaints SET duplicate_status = 'NONE' WHERE duplicate_status IS NULL;")
+            if "completion_details" not in columns:
+                cursor.execute("ALTER TABLE complaints ADD COLUMN completion_details TEXT;")
+            if "resolution_latitude" not in columns:
+                cursor.execute("ALTER TABLE complaints ADD COLUMN resolution_latitude REAL;")
+            if "resolution_longitude" not in columns:
+                cursor.execute("ALTER TABLE complaints ADD COLUMN resolution_longitude REAL;")
+            if "resolution_gps_accuracy" not in columns:
+                cursor.execute("ALTER TABLE complaints ADD COLUMN resolution_gps_accuracy REAL;")
 
             # Indexes for high performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_complaints_ref ON complaints(reference_no);")
@@ -206,6 +232,51 @@ def init_operational_db():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_complaints_staff ON complaints(assigned_staff_id);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_complaints_dept ON complaints(assigned_department);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(status);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_complaints_canonical ON complaints(canonical_complaint_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_complaints_dup_status ON complaints(duplicate_status);")
+
+            # 2b. Central Duplicate Intelligence & Candidate Review Queue
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS complaint_duplicates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_complaint_id INTEGER NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
+                duplicate_complaint_id INTEGER NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
+                match_tier TEXT NOT NULL CHECK(match_tier IN ('STRONG', 'POSSIBLE')),
+                match_reason TEXT NOT NULL,
+                distance_meters REAL,
+                review_status TEXT NOT NULL DEFAULT 'PENDING' CHECK(review_status IN ('PENDING', 'LINKED', 'DISMISSED')),
+                reviewed_by INTEGER REFERENCES users(id),
+                reviewed_at TEXT,
+                review_notes TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(original_complaint_id, duplicate_complaint_id)
+            );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dup_original ON complaint_duplicates(original_complaint_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dup_duplicate ON complaint_duplicates(duplicate_complaint_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dup_status ON complaint_duplicates(review_status);")
+
+            # 2c. Completion Evidence & Field Verification Assets
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS complaint_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                complaint_id INTEGER NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
+                uploader_id INTEGER NOT NULL REFERENCES users(id),
+                file_path TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                content_type TEXT NOT NULL,
+                evidence_type TEXT NOT NULL DEFAULT 'COMPLETION' CHECK(evidence_type IN ('COMPLETION', 'INITIAL', 'INSPECTION')),
+                latitude REAL,
+                longitude REAL,
+                gps_accuracy REAL,
+                location_source TEXT DEFAULT 'DEVICE_GPS',
+                notes TEXT,
+                created_at TEXT NOT NULL
+            );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_complaint ON complaint_evidence(complaint_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_uploader ON complaint_evidence(uploader_id);")
 
             # 3. Status Audit History (Chronological Timeline)
             conn.execute("""

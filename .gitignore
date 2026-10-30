@@ -11,22 +11,12 @@ build/
 *.log
 .DS_Store
 
-# Python environments and caches
-.python-version
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# Local operational databases and backups
+data/*.db
+data/*.db-*
+data/*backup*
+data/evidence/
 
-# Local databases and logs
-*.db
+# Local evidence and generated test artifacts
 *.sqlite
 *.sqlite3
-*.log
-
-# Local secrets
-.env
-.env.*
-!.env.example
-
-# Build and temporary files
-coverage/

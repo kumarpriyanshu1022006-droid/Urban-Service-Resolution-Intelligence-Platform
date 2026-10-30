@@ -77,6 +77,58 @@ const PAGE_META = {
   },
 };
 
+class TabErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Tab runtime rendering exception:', error, errorInfo);
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.activeTab !== this.props.activeTab && this.state.hasError) {
+      this.setState({ hasError: false, error: null });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="max-w-2xl mx-auto my-8 p-6 bg-white border border-[#DCDDD4] rounded-xl shadow-sm text-center space-y-4">
+          <div className="w-12 h-12 bg-[#B4483E]/10 text-[#B4483E] rounded-full flex items-center justify-center mx-auto">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <h2 className="text-xl font-serif text-[#252C29]">Unable to Load Page</h2>
+          <p className="text-xs text-[#68716A]">
+            A rendering error occurred while displaying this view:
+          </p>
+          <div className="p-3 bg-[#ECEAE2]/60 rounded text-left text-xs font-mono text-[#B4483E] overflow-x-auto">
+            {this.state.error?.message || 'Unknown render exception'}
+          </div>
+          <div className="pt-2 flex justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="px-4 py-2 bg-[#254A40] text-white rounded text-xs font-semibold hover:bg-[#1E3B33] cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function MainApp() {
   const { user, isStaff, isAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState('citizen_dashboard');
@@ -221,67 +273,69 @@ function MainApp() {
 
         {/* Workspace body */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-          {/* Operational Citizen Pages */}
-          {activeTab === 'citizen_dashboard' && (
-            <CitizenDashboard onNavigate={handleNavigate} />
-          )}
+          <TabErrorBoundary activeTab={activeTab}>
+            {/* Operational Citizen Pages */}
+            {activeTab === 'citizen_dashboard' && (
+              <CitizenDashboard onNavigate={handleNavigate} />
+            )}
 
-          {activeTab === 'submit_complaint' && (
-            <SubmitComplaint onNavigate={handleNavigate} />
-          )}
+            {activeTab === 'submit_complaint' && (
+              <SubmitComplaint onNavigate={handleNavigate} />
+            )}
 
-          {activeTab === 'track' && (
-            <ComplaintTracking
-              initialRef={trackingRef}
-              onNavigate={handleNavigate}
-            />
-          )}
+            {activeTab === 'track' && (
+              <ComplaintTracking
+                initialRef={trackingRef}
+                onNavigate={handleNavigate}
+              />
+            )}
 
-          {/* Operational Staff Workspace */}
-          {activeTab === 'staff_workspace' && (
-            <StaffWorkspace onNavigate={handleNavigate} />
-          )}
+            {/* Operational Staff Workspace */}
+            {activeTab === 'staff_workspace' && (
+              <StaffWorkspace onNavigate={handleNavigate} />
+            )}
 
-          {/* Operational Admin Dashboard & Telemetry */}
-          {activeTab === 'admin_dashboard' && (
-            <AdminDashboard onNavigate={handleNavigate} />
-          )}
+            {/* Operational Admin Dashboard & Telemetry */}
+            {activeTab === 'admin_dashboard' && (
+              <AdminDashboard onNavigate={handleNavigate} />
+            )}
 
-          {activeTab === 'operational_analytics' && (
-            <OperationalAnalytics onNavigate={handleNavigate} />
-          )}
+            {activeTab === 'operational_analytics' && (
+              <OperationalAnalytics onNavigate={handleNavigate} />
+            )}
 
-          {/* Cross-Cutting & Historical ML / DuckDB Views */}
-          {activeTab === 'predict' && (
-            <PredictResolution
-              apiHealth={apiHealth}
-              initialData={prefilledComplaint}
-            />
-          )}
+            {/* Cross-Cutting & Historical ML / DuckDB Views */}
+            {activeTab === 'predict' && (
+              <PredictResolution
+                apiHealth={apiHealth}
+                initialData={prefilledComplaint}
+              />
+            )}
 
-          {activeTab === 'historical_complaints' && (
-            <Complaints
-              onSelectComplaintForPredict={handleSelectComplaintForPredict}
-            />
-          )}
+            {activeTab === 'historical_complaints' && (
+              <Complaints
+                onSelectComplaintForPredict={handleSelectComplaintForPredict}
+              />
+            )}
 
-          {activeTab === 'historical_analytics' && <Analytics />}
+            {activeTab === 'historical_analytics' && <Analytics />}
 
-          {activeTab === 'overview' && (
-            <Overview
-              onNavigatePredict={() => setActiveTab('predict')}
-              onNavigateComplaints={() => setActiveTab('historical_complaints')}
-              onSelectComplaintForPredict={handleSelectComplaintForPredict}
-            />
-          )}
+            {activeTab === 'overview' && (
+              <Overview
+                onNavigatePredict={() => setActiveTab('predict')}
+                onNavigateComplaints={() => setActiveTab('historical_complaints')}
+                onSelectComplaintForPredict={handleSelectComplaintForPredict}
+              />
+            )}
 
-          {activeTab === 'model-info' && (
-            <ModelInformation
-              apiHealth={apiHealth}
-              onRefreshHealth={checkBackendHealth}
-              isRefreshingHealth={isRefreshingHealth}
-            />
-          )}
+            {activeTab === 'model-info' && (
+              <ModelInformation
+                apiHealth={apiHealth}
+                onRefreshHealth={checkBackendHealth}
+                isRefreshingHealth={isRefreshingHealth}
+              />
+            )}
+          </TabErrorBoundary>
         </main>
 
         {/* Global Footer */}

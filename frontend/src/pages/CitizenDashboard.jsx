@@ -51,7 +51,7 @@ export default function CitizenDashboard({ onNavigate }) {
       case 'On Hold':
         return <span className="px-2 py-0.5 rounded text-xs font-medium bg-[#B4483E]/10 text-[#B4483E] border border-[#B4483E]/20">On Hold</span>;
       case 'Resolved - Pending Verification':
-        return <span className="px-2 py-0.5 rounded text-xs font-medium bg-[#367454]/10 text-[#367454] border border-[#367454]/20">Work Completed</span>;
+        return <span className="px-2 py-0.5 rounded text-xs font-medium bg-[#8F6A2A]/15 text-[#8F6A2A] border border-[#8F6A2A]/30">Awaiting Verification</span>;
       case 'Closed':
         return <span className="px-2 py-0.5 rounded text-xs font-medium bg-[#367454]/15 text-[#367454] border border-[#367454]/30 font-semibold">Closed & Verified</span>;
       default:
@@ -140,8 +140,10 @@ export default function CitizenDashboard({ onNavigate }) {
             >
               <option value="ALL">All Statuses</option>
               <option value="Submitted">Submitted</option>
+              <option value="Assigned">Assigned</option>
               <option value="In Progress">In Progress</option>
               <option value="On Hold">On Hold</option>
+              <option value="Resolved - Pending Verification">Pending Verification</option>
               <option value="Closed">Closed</option>
             </select>
 

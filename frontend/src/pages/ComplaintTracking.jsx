@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Search, CheckCircle2, AlertTriangle, MapPin, Star, MessageSquare } from 'lucide-react';
+import {
+  Search,
+  CheckCircle2,
+  AlertTriangle,
+  MapPin,
+  Star,
+  MessageSquare,
+  Clock,
+  ShieldCheck,
+  Camera,
+  X
+} from 'lucide-react';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Notice from '../components/ui/Notice';
+import AuthenticatedImage from '../components/ui/AuthenticatedImage';
 import { fetchOperationalComplaintDetail, submitComplaintFeedback } from '../services/api';
 
 export default function ComplaintTracking({ initialRef }) {
@@ -11,6 +23,7 @@ export default function ComplaintTracking({ initialRef }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [lightboxImage, setLightboxImage] = useState(null);
 
   // Feedback modal state
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
@@ -64,8 +77,12 @@ export default function ComplaintTracking({ initialRef }) {
   };
 
   const complaint = data?.complaint;
-  const history = data?.history || [];
+  const history = useMemo(() => data?.history || [], [data?.history]);
   const feedback = data?.feedback;
+
+  const lastRejection = useMemo(() => {
+    return [...history].reverse().find((h) => h.action === 'Resolution Rejected');
+  }, [history]);
 
   const [currentTime, setCurrentTime] = useState(0);
 
@@ -145,8 +162,20 @@ export default function ComplaintTracking({ initialRef }) {
                   <span className="font-mono text-xl font-bold text-[#254A40]">
                     {complaint.reference_no}
                   </span>
-                  <span className="px-2.5 py-0.5 rounded text-xs font-semibold bg-[#254A40]/10 text-[#254A40] border border-[#254A40]/20">
-                    {complaint.status}
+                  <span className={`px-2.5 py-0.5 rounded text-xs font-semibold ${
+                    complaint.status === 'Closed'
+                      ? 'bg-[#367454]/15 text-[#367454] border border-[#367454]/30'
+                      : complaint.status === 'Resolved - Pending Verification'
+                      ? 'bg-[#8F6A2A]/15 text-[#8F6A2A] border border-[#8F6A2A]/30'
+                      : complaint.status === 'In Progress' && lastRejection
+                      ? 'bg-[#C59A52]/15 text-[#8F6A2A] border border-[#C59A52]/30'
+                      : 'bg-[#254A40]/10 text-[#254A40] border border-[#254A40]/20'
+                  }`}>
+                    {complaint.status === 'Resolved - Pending Verification'
+                      ? 'Resolved – Awaiting Verification'
+                      : complaint.status === 'In Progress' && lastRejection
+                      ? 'In Progress (Rework)'
+                      : complaint.status}
                   </span>
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${
                     complaint.priority === 'Emergency'
@@ -256,22 +285,90 @@ export default function ComplaintTracking({ initialRef }) {
               </div>
             )}
 
-            {/* Resolution Verification Banner */}
-            {(complaint.status === 'Resolved - Pending Verification' || complaint.status === 'Closed') && (
-              <div className="p-4 bg-[#367454]/10 border border-[#367454]/30 rounded-lg text-xs space-y-2">
+            {/* Administrative Rework Notice (When Previous Resolution Was Rejected) */}
+            {complaint.status === 'In Progress' && lastRejection && (
+              <div className="p-4 bg-[#C59A52]/15 border border-[#C59A52]/40 rounded-lg text-xs space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-[#8F6A2A] flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-[#8F6A2A]" />
+                    Quality Review Update: Field Rework in Progress
+                  </span>
+                  <span className="text-[11px] text-[#68716A]">Returned: {lastRejection.created_at}</span>
+                </div>
+                <p className="text-[#252C29]">
+                  <strong>Admin Rework Instructions: </strong>
+                  {lastRejection.comment}
+                </p>
+                <span className="text-[11px] text-[#68716A] block">
+                  Operations administration reviewed initial field completion and requested corrections before final sign-off. Field staff is currently performing rework.
+                </span>
+              </div>
+            )}
+
+            {/* Awaiting Administrative Verification Banner */}
+            {complaint.status === 'Resolved - Pending Verification' && (
+              <div className="p-4 bg-[#8F6A2A]/10 border border-[#8F6A2A]/30 rounded-lg text-xs space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-[#8F6A2A] flex items-center gap-1.5">
+                    <Clock className="w-4 h-4 text-[#8F6A2A]" />
+                    Field Work Completed — Awaiting Administrative Verification
+                  </span>
+                  {complaint.updated_at && (
+                    <span className="text-[11px] text-[#68716A]">Reported: {complaint.updated_at}</span>
+                  )}
+                </div>
+                <p className="text-[#252C29]">
+                  <strong>Field Completion Notes: </strong>
+                  {complaint.resolution_notes || 'Field staff reported service corrections completed.'}
+                </p>
+
+                {/* Optional Field GPS Details */}
+                {complaint.resolution_latitude && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-[#68716A] pt-1">
+                    <MapPin className="w-3.5 h-3.5 text-[#8F6A2A]" />
+                    <span>
+                      Field GPS Provenance: {complaint.resolution_latitude.toFixed(4)}, {complaint.resolution_longitude.toFixed(4)}
+                      {complaint.resolution_gps_accuracy ? ` (±${complaint.resolution_gps_accuracy}m accuracy)` : ''}
+                    </span>
+                  </div>
+                )}
+
+                {/* Optional Technical Details */}
+                {complaint.completion_details && (
+                  <div className="text-[11px] text-[#68716A] pt-1 border-t border-[#8F6A2A]/20">
+                    <strong>Technical Details: </strong>
+                    <span>{complaint.completion_details}</span>
+                  </div>
+                )}
+
+                <div className="pt-1 text-[11px] text-[#68716A] italic">
+                  Two-party verification in progress: A municipal operations supervisor must review and verify submitted evidence before official closure.
+                </div>
+              </div>
+            )}
+
+            {/* Verified Case Resolution Banner */}
+            {complaint.status === 'Closed' && (
+              <div className="p-4 bg-[#367454]/10 border border-[#367454]/30 rounded-lg text-xs space-y-2.5">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-[#367454] flex items-center gap-1.5">
-                    <CheckCircle2 className="w-4 h-4" />
-                    {complaint.status === 'Closed' ? 'Verified Case Resolution' : 'Field Work Reported Completed'}
+                    <CheckCircle2 className="w-4 h-4 text-[#367454]" />
+                    Verified Case Resolution & Official Closure
                   </span>
                   {complaint.closed_at && (
                     <span className="text-[11px] text-[#68716A]">Closed: {complaint.closed_at}</span>
                   )}
                 </div>
                 <p className="text-[#252C29]">
-                  <strong>Field Notes: </strong>
-                  {complaint.resolution_notes || 'All requested corrections were performed by municipal field staff.'}
+                  <strong>Resolution Notes: </strong>
+                  {complaint.resolution_notes || 'All requested corrections were performed by municipal field staff and verified by administration.'}
                 </p>
+
+                {complaint.actual_resolution_hours !== null && (
+                  <div className="text-[11px] text-[#254A40] font-medium">
+                    Total Turnaround Duration: {complaint.actual_resolution_hours.toFixed(1)} hours
+                  </div>
+                )}
 
                 {/* Citizen Feedback Section */}
                 <div className="pt-2 border-t border-[#367454]/20 flex items-center justify-between">
@@ -294,6 +391,43 @@ export default function ComplaintTracking({ initialRef }) {
               </div>
             )}
 
+            {/* Resolution Evidence Gallery */}
+            {data?.evidence && data.evidence.length > 0 ? (
+              <div className="p-4 bg-white border border-[#DCDDD4] rounded-lg text-xs space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-[#252C29] flex items-center gap-1.5">
+                    <Camera className="w-4 h-4 text-[#254A40]" />
+                    Field Resolution Evidence Photos ({data.evidence.length})
+                  </span>
+                  <span className="text-[11px] text-[#68716A]">Authenticated Public Audit Media</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {data.evidence.map((ev) => (
+                    <div
+                      key={ev.id}
+                      className="group relative rounded-lg overflow-hidden border border-[#DCDDD4] bg-[#ECEAE2]/30 cursor-pointer hover:border-[#254A40] transition-colors"
+                      onClick={() => setLightboxImage(ev)}
+                    >
+                      <AuthenticatedImage
+                        evidenceId={ev.id}
+                        alt={ev.original_filename || 'Evidence Photo'}
+                        className="w-full h-24 sm:h-28 object-cover group-hover:scale-105 transition-transform"
+                      />
+                      <div className="p-1.5 bg-white/95 border-t border-[#DCDDD4] text-[10px] text-[#68716A] truncate">
+                        <span className="truncate block font-medium text-[#252C29]">{ev.original_filename}</span>
+                        <span>{(ev.file_size / 1024).toFixed(0)} KB • {ev.created_at ? ev.created_at.split(' ')[0] : ''}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (complaint.status === 'Resolved - Pending Verification' || complaint.status === 'Closed') ? (
+              <div className="p-3 bg-[#ECEAE2]/40 border border-[#DCDDD4] rounded-lg text-xs text-[#68716A] flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[#68716A] shrink-0" />
+                <span>Field completion photos and diagnostics are restricted to the verified submitting citizen and authorized municipal staff.</span>
+              </div>
+            ) : null}
+
             {/* Description quote */}
             <div className="text-xs text-[#68716A] bg-[#ECEAE2]/30 p-3 rounded border border-[#DCDDD4]">
               <strong className="text-[#252C29]">Original Citizen Report: </strong>
@@ -307,35 +441,50 @@ export default function ComplaintTracking({ initialRef }) {
             subtitle="Verified chronological events logged by municipal dispatchers and inspectors"
           >
             <div className="relative pl-6 space-y-6 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-[#DCDDD4]">
-              {history.map((event, idx) => (
-                <div key={event.id || idx} className="relative space-y-1">
-                  {/* Dot */}
-                  <div className={`absolute -left-[23px] top-1 w-3 h-3 rounded-full border-2 bg-white ${
-                    event.to_status === 'Closed'
-                      ? 'border-[#367454] bg-[#367454]'
-                      : event.to_status === 'On Hold'
-                      ? 'border-[#B4483E]'
-                      : 'border-[#254A40]'
-                  }`} />
+              {history.map((event, idx) => {
+                const isApproved = event.action === 'Verified & Closed' || event.to_status === 'Closed';
+                const isRejected = event.action === 'Resolution Rejected';
+                const isWorkCompleted = event.action === 'Work Completed — Queued for Verification' || event.to_status === 'Resolved - Pending Verification';
+                const isOnHold = event.to_status === 'On Hold';
 
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold text-[#252C29]">
-                      {event.action || event.to_status}
-                    </span>
-                    <span className="text-[11px] text-[#68716A] font-mono">
-                      {event.created_at}
-                    </span>
+                return (
+                  <div key={event.id || idx} className="relative space-y-1">
+                    {/* Dot */}
+                    <div className={`absolute -left-[23px] top-1 w-3 h-3 rounded-full border-2 bg-white ${
+                      isApproved
+                        ? 'border-[#367454] bg-[#367454]'
+                        : isRejected
+                        ? 'border-[#8F6A2A] bg-[#8F6A2A]'
+                        : isWorkCompleted
+                        ? 'border-[#1D70B8] bg-[#1D70B8]'
+                        : isOnHold
+                        ? 'border-[#B4483E] bg-[#B4483E]'
+                        : 'border-[#254A40]'
+                    }`} />
+
+                    <div className="flex items-center justify-between text-xs">
+                      <span className={`font-semibold ${
+                        isApproved ? 'text-[#367454]' : isRejected ? 'text-[#8F6A2A]' : 'text-[#252C29]'
+                      }`}>
+                        {event.action || event.to_status}
+                      </span>
+                      <span className="text-[11px] text-[#68716A] font-mono">
+                        {event.created_at}
+                      </span>
+                    </div>
+
+                    <p className={`text-xs ${
+                      isRejected ? 'p-2 bg-[#C59A52]/10 border border-[#C59A52]/30 rounded text-[#8F6A2A] font-medium' : 'text-[#68716A]'
+                    }`}>
+                      {event.comment}
+                    </p>
+
+                    <div className="text-[11px] text-[#8F6A2A]">
+                      Logged by: {event.actor_name} ({event.actor_role})
+                    </div>
                   </div>
-
-                  <p className="text-xs text-[#68716A]">
-                    {event.comment}
-                  </p>
-
-                  <div className="text-[11px] text-[#8F6A2A]">
-                    Logged by: {event.actor_name} ({event.actor_role})
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </Card>
         </div>
@@ -404,6 +553,39 @@ export default function ComplaintTracking({ initialRef }) {
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Image Lightbox Modal */}
+      {lightboxImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => setLightboxImage(null)}
+        >
+          <div
+            className="relative max-w-3xl max-h-[90vh] bg-white rounded-xl overflow-hidden shadow-2xl p-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-2 border-b border-[#DCDDD4]">
+              <div className="text-xs font-semibold text-[#252C29] truncate max-w-[400px]">
+                {lightboxImage.original_filename || 'Evidence Photo'}
+              </div>
+              <button
+                type="button"
+                className="text-[#68716A] hover:text-[#252C29] p-1 rounded-md"
+                onClick={() => setLightboxImage(null)}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex items-center justify-center p-2 bg-[#252C29]/5">
+              <AuthenticatedImage
+                evidenceId={lightboxImage.id}
+                alt={lightboxImage.original_filename || 'Enlarged Evidence'}
+                className="max-h-[75vh] w-auto max-w-full object-contain rounded"
+              />
+            </div>
           </div>
         </div>
       )}

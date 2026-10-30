@@ -284,6 +284,27 @@ export async function fetchStaffList(department) {
   }
 }
 
+export async function fetchAddressSuggestions(query, borough) {
+  try {
+    const params = { query };
+    if (borough && borough !== 'ALL') params.borough = borough;
+    const res = await apiClient.get('/api/operations/geocoding/autocomplete', { params });
+    return { success: true, data: res.data?.suggestions || [] };
+  } catch (error) {
+    return { success: false, error: formatApiError(error), data: [] };
+  }
+}
+
+export async function reverseGeocodeCoordinates(latitude, longitude) {
+  try {
+    const params = { lat: latitude, lon: longitude };
+    const res = await apiClient.get('/api/operations/geocoding/reverse', { params });
+    return { success: res.data?.success ?? false, data: res.data };
+  } catch (error) {
+    return { success: false, error: formatApiError(error), data: null };
+  }
+}
+
 export async function submitOperationalComplaint(complaintData) {
   try {
     const res = await apiClient.post('/api/operations/complaints', complaintData);
@@ -377,6 +398,105 @@ export async function markNotificationRead(notificationId) {
 export async function fetchOperationalAnalytics() {
   try {
     const res = await apiClient.get('/api/operations/analytics/overview');
+    return { success: true, data: res.data };
+  } catch (error) {
+    return { success: false, error: formatApiError(error) };
+  }
+}
+
+/**
+ * Pre-submission duplicate check advisory: POST /api/operations/complaints/check-duplicate
+ */
+export async function checkComplaintDuplicates(payload) {
+  try {
+    const res = await apiClient.post('/api/operations/complaints/check-duplicate', payload);
+    return { success: true, data: res.data };
+  } catch (error) {
+    return { success: false, error: formatApiError(error) };
+  }
+}
+
+/**
+ * Admin Duplicate Review Queue: GET /api/operations/duplicates?status={status}
+ */
+export async function fetchDuplicateReviewQueue(status = 'PENDING') {
+  try {
+    const res = await apiClient.get(`/api/operations/duplicates?status=${encodeURIComponent(status)}`);
+    return { success: true, data: res.data };
+  } catch (error) {
+    return { success: false, error: formatApiError(error) };
+  }
+}
+
+/**
+ * Admin Duplicate Action: POST /api/operations/duplicates/{id}/review
+ * @param {number|string} id - Candidate pair ID
+ * @param {Object} payload - { action: 'LINK' | 'DISMISS', reason: string }
+ */
+export async function reviewDuplicateCandidate(id, payload) {
+  try {
+    const res = await apiClient.post(`/api/operations/duplicates/${id}/review`, payload);
+    return { success: true, data: res.data };
+  } catch (error) {
+    return { success: false, error: formatApiError(error) };
+  }
+}
+
+/**
+ * Phase 3: Staff upload completion evidence (multipart/form-data)
+ * @param {string} referenceNo
+ * @param {FormData} formData
+ */
+export async function uploadCompletionEvidence(referenceNo, formData) {
+  try {
+    const res = await apiClient.post(`/api/operations/complaints/${referenceNo}/evidence`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return { success: true, data: res.data };
+  } catch (error) {
+    return { success: false, error: formatApiError(error) };
+  }
+}
+
+/**
+ * Phase 3: Fetch evidence metadata list for complaint
+ * @param {string} referenceNo
+ */
+export async function fetchComplaintEvidence(referenceNo) {
+  try {
+    const res = await apiClient.get(`/api/operations/complaints/${referenceNo}/evidence`);
+    return { success: true, data: res.data };
+  } catch (error) {
+    return { success: false, error: formatApiError(error) };
+  }
+}
+
+/**
+ * Phase 3: Securely fetch evidence image blob with Authorization header (no URL query token leakage)
+ * @param {number|string} evidenceId
+ */
+export async function fetchEvidenceImageBlob(evidenceId) {
+  try {
+    const res = await apiClient.get(`/api/operations/evidence/${evidenceId}/file`, {
+      responseType: 'blob',
+    });
+    const blobUrl = URL.createObjectURL(res.data);
+    return { success: true, url: blobUrl };
+  } catch (error) {
+    return { success: false, error: formatApiError(error) };
+  }
+}
+
+/**
+ * Phase 3: Admin verify complaint resolution (APPROVE or REJECT)
+ * @param {string} referenceNo
+ * @param {Object} payload - { action: 'APPROVE' | 'REJECT', rejection_reason?: string, notes?: string }
+ */
+export async function verifyComplaintResolution(referenceNo, payload) {
+  try {
+    const res = await apiClient.post(`/api/operations/complaints/${referenceNo}/verify`, payload);
     return { success: true, data: res.data };
   } catch (error) {
     return { success: false, error: formatApiError(error) };

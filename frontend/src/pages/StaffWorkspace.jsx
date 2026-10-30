@@ -1,10 +1,35 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Briefcase, Clock, Play, Pause, CheckCircle2, RefreshCw, FileText, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Briefcase,
+  Clock,
+  Play,
+  Pause,
+  CheckCircle2,
+  RefreshCw,
+  FileText,
+  ChevronRight,
+  Upload,
+  Image as ImageIcon,
+  MapPin,
+  X,
+  AlertTriangle,
+  Eye,
+  ShieldCheck,
+  AlertCircle,
+  ExternalLink
+} from 'lucide-react';
 import Card from '../components/ui/Card';
 import StatCard from '../components/ui/StatCard';
 import Button from '../components/ui/Button';
 import Notice from '../components/ui/Notice';
-import { fetchOperationalComplaints, updateOperationalStatus, addOperationalNote } from '../services/api';
+import AuthenticatedImage from '../components/ui/AuthenticatedImage';
+import {
+  fetchOperationalComplaints,
+  fetchOperationalComplaintDetail,
+  updateOperationalStatus,
+  addOperationalNote,
+  uploadCompletionEvidence
+} from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 export default function StaffWorkspace({ onNavigate }) {
@@ -17,13 +42,36 @@ export default function StaffWorkspace({ onNavigate }) {
   // Active modal state
   const [modalType, setModalType] = useState(null); // 'hold' | 'resolve' | 'note'
   const [selectedCase, setSelectedCase] = useState(null);
-  const [holdReason, setHoldReason] = useState('');
-  const [holdUntil, setHoldUntil] = useState('');
-  const [resolutionNotes, setResolutionNotes] = useState('');
-  const [noteComment, setNoteComment] = useState('');
-  const [isPublicNote, setIsPublicNote] = useState(true);
   const [submittingAction, setSubmittingAction] = useState(false);
   const [activeQueueTab, setActiveQueueTab] = useState('my_tasks'); // 'my_tasks' | 'unclaimed' | 'all'
+
+  // Hold modal form state
+  const [holdReason, setHoldReason] = useState('');
+  const [holdUntil, setHoldUntil] = useState('');
+
+  // Note modal form state
+  const [noteComment, setNoteComment] = useState('');
+  const [isPublicNote, setIsPublicNote] = useState(true);
+
+  // Completion Evidence Modal state (Phase 3 Stage 2)
+  const [resolutionNotes, setResolutionNotes] = useState('');
+  const [completionDetails, setCompletionDetails] = useState('');
+  const [evidencePhotos, setEvidencePhotos] = useState([]); // array of { file, name, size, previewUrl }
+  const [resolutionGps, setResolutionGps] = useState(null); // { latitude, longitude, accuracy }
+  const [detectingGps, setDetectingGps] = useState(false);
+  const [gpsError, setGpsError] = useState(null);
+  const [photoError, setPhotoError] = useState(null);
+  const [rejectionNotice, setRejectionNotice] = useState(null); // if case was previously rejected by admin
+  const [priorEvidence, setPriorEvidence] = useState([]);
+  const fileInputRef = useRef(null);
+
+  // Case Inspection Detail Modal State
+  const [inspectingCase, setInspectingCase] = useState(null);
+  const [caseDetail, setCaseDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  // Zoomed Image Modal State
+  const [zoomedImage, setZoomedImage] = useState(null);
 
   const loadAssignedQueue = useCallback(async () => {
     setLoading(true);
@@ -41,10 +89,20 @@ export default function StaffWorkspace({ onNavigate }) {
     loadAssignedQueue();
   }, [loadAssignedQueue, user?.id, user?.department]);
 
+  // Clean up object URLs on component unmount
+  useEffect(() => {
+    return () => {
+      evidencePhotos.forEach((item) => {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      });
+    };
+  }, [evidencePhotos]);
+
   // Handle direct transition to In Progress
   const handleStartWork = async (item) => {
     setLoading(true);
     setActionSuccess(null);
+    setError(null);
     const res = await updateOperationalStatus(item.reference_no, {
       to_status: 'In Progress',
       comment: `${user?.full_name || 'Officer'} initiated field investigation and active work.`
@@ -52,6 +110,9 @@ export default function StaffWorkspace({ onNavigate }) {
     if (res.success) {
       setActionSuccess(`Complaint ${item.reference_no} is now marked 'In Progress'.`);
       loadAssignedQueue();
+      if (inspectingCase && inspectingCase.reference_no === item.reference_no) {
+        handleOpenCaseDetail(item);
+      }
     } else {
       setError(res.error || 'Failed to update status.');
       setLoading(false);
@@ -62,6 +123,7 @@ export default function StaffWorkspace({ onNavigate }) {
   const handleResumeWork = async (item) => {
     setLoading(true);
     setActionSuccess(null);
+    setError(null);
     const res = await updateOperationalStatus(item.reference_no, {
       to_status: 'In Progress',
       comment: 'Operational blocker cleared. Active work resumed.'
@@ -69,13 +131,129 @@ export default function StaffWorkspace({ onNavigate }) {
     if (res.success) {
       setActionSuccess(`Complaint ${item.reference_no} resumed to 'In Progress'.`);
       loadAssignedQueue();
+      if (inspectingCase && inspectingCase.reference_no === item.reference_no) {
+        handleOpenCaseDetail(item);
+      }
     } else {
       setError(res.error || 'Failed to resume work.');
       setLoading(false);
     }
   };
 
-  // Submit Modal Actions (Hold, Resolve, Note)
+  // Open Completion Modal and load any prior admin rejection / evidence context
+  const handleOpenResolveModal = async (item) => {
+    setSelectedCase(item);
+    setResolutionNotes('');
+    setCompletionDetails('');
+    setResolutionGps(null);
+    setGpsError(null);
+    setPhotoError(null);
+    setRejectionNotice(null);
+    setPriorEvidence([]);
+
+    // Clear any previous previews
+    evidencePhotos.forEach((p) => {
+      if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
+    });
+    setEvidencePhotos([]);
+
+    // Fetch complaint history to inspect if this complaint had a prior admin rejection
+    try {
+      const res = await fetchOperationalComplaintDetail(item.reference_no);
+      if (res.success && res.data) {
+        const hist = res.data.history || [];
+        const lastRejection = [...hist].reverse().find((h) => h.action === 'Resolution Rejected');
+        if (lastRejection) {
+          setRejectionNotice({
+            reason: lastRejection.comment || 'Admin requested rework.',
+            date: lastRejection.created_at,
+            actor: lastRejection.actor_name
+          });
+        }
+        if (res.data.evidence && res.data.evidence.length > 0) {
+          setPriorEvidence(res.data.evidence);
+        }
+      }
+    } catch {
+      // Non-blocking metadata enrichment
+    }
+
+    setModalType('resolve');
+  };
+
+  // Handle Photo File Selection with Validation
+  const handlePhotoSelect = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setPhotoError(null);
+
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    const maxBytes = 5 * 1024 * 1024; // 5 MB
+
+    const currentCount = evidencePhotos.length;
+    if (currentCount + files.length > 5) {
+      setPhotoError(`Maximum 5 evidence photos allowed. (Currently selected: ${currentCount}, tried to add: ${files.length})`);
+      return;
+    }
+
+    const validItems = [];
+    for (const f of files) {
+      if (!allowedTypes.includes(f.type.toLowerCase())) {
+        setPhotoError(`File '${f.name}' has an unsupported format. Only JPEG, PNG, and WEBP images are permitted.`);
+        return;
+      }
+      if (f.size > maxBytes) {
+        setPhotoError(`File '${f.name}' (${(f.size / (1024 * 1024)).toFixed(2)} MB) exceeds the 5 MB limit.`);
+        return;
+      }
+      validItems.push({
+        file: f,
+        name: f.name,
+        size: (f.size / 1024).toFixed(0) + ' KB',
+        previewUrl: URL.createObjectURL(f)
+      });
+    }
+
+    setEvidencePhotos((prev) => [...prev, ...validItems]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleRemovePhoto = (index) => {
+    setEvidencePhotos((prev) => {
+      const item = prev[index];
+      if (item?.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  // Handle GPS detection
+  const handleDetectResolutionLocation = () => {
+    if (!navigator.geolocation) {
+      setGpsError('Geolocation is not supported by your browser.');
+      return;
+    }
+    setDetectingGps(true);
+    setGpsError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setResolutionGps({
+          latitude: Number(pos.coords.latitude.toFixed(6)),
+          longitude: Number(pos.coords.longitude.toFixed(6)),
+          accuracy: pos.coords.accuracy ? Math.round(pos.coords.accuracy * 10) / 10 : null
+        });
+        setDetectingGps(false);
+      },
+      (err) => {
+        setDetectingGps(false);
+        setGpsError(`Unable to capture GPS coordinates (${err.message}). You may submit completion evidence without GPS.`);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
+  // Submit Modal Actions (Hold, Resolve with Evidence, Note)
   const handleModalSubmit = async (e) => {
     e.preventDefault();
     if (!selectedCase) return;
@@ -103,22 +281,58 @@ export default function StaffWorkspace({ onNavigate }) {
           setError(res.error || 'Failed to place on hold.');
         }
       } else if (modalType === 'resolve') {
-        if (!resolutionNotes.trim()) {
-          alert('Resolution notes are required.');
+        // Validation checks
+        if (!resolutionNotes.trim() || resolutionNotes.trim().length < 5) {
+          setPhotoError('Work completion notes are required (minimum 5 characters).');
           setSubmittingAction(false);
           return;
         }
-        const res = await updateOperationalStatus(selectedCase.reference_no, {
-          to_status: 'Resolved - Pending Verification',
-          resolution_notes: resolutionNotes.trim(),
-          comment: `Completion reported: ${resolutionNotes.trim()}`
+        if (evidencePhotos.length === 0) {
+          setPhotoError('At least 1 resolution photo is required as completion evidence.');
+          setSubmittingAction(false);
+          return;
+        }
+        if (evidencePhotos.length > 5) {
+          setPhotoError('Maximum 5 resolution photos are permitted.');
+          setSubmittingAction(false);
+          return;
+        }
+
+        // Build FormData
+        const formData = new FormData();
+        formData.append('notes', resolutionNotes.trim());
+        if (completionDetails.trim()) {
+          formData.append('completion_details', completionDetails.trim());
+        }
+        if (resolutionGps) {
+          formData.append('latitude', String(resolutionGps.latitude));
+          formData.append('longitude', String(resolutionGps.longitude));
+          if (resolutionGps.accuracy !== null && resolutionGps.accuracy !== undefined) {
+            formData.append('gps_accuracy', String(resolutionGps.accuracy));
+          }
+          formData.append('location_source', 'DEVICE_GPS');
+        }
+        evidencePhotos.forEach((item) => {
+          formData.append('photos', item.file, item.name);
         });
+
+        const res = await uploadCompletionEvidence(selectedCase.reference_no, formData);
         if (res.success) {
-          setActionSuccess(`Complaint ${selectedCase.reference_no} marked resolved and queued for Admin verification.`);
+          setActionSuccess(
+            `Complaint ${selectedCase.reference_no} marked 'Resolved – Pending Verification'. Queued for administrative review and final closure.`
+          );
+          // Revoke previews
+          evidencePhotos.forEach((p) => {
+            if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
+          });
+          setEvidencePhotos([]);
           setModalType(null);
           loadAssignedQueue();
+          if (inspectingCase && inspectingCase.reference_no === selectedCase.reference_no) {
+            handleOpenCaseDetail(selectedCase);
+          }
         } else {
-          setError(res.error || 'Failed to report completion.');
+          setError(res.error || 'Failed to submit completion evidence.');
         }
       } else if (modalType === 'note') {
         if (!noteComment.trim()) {
@@ -134,6 +348,9 @@ export default function StaffWorkspace({ onNavigate }) {
           setActionSuccess(`Progress note added to ${selectedCase.reference_no}.`);
           setModalType(null);
           loadAssignedQueue();
+          if (inspectingCase && inspectingCase.reference_no === selectedCase.reference_no) {
+            handleOpenCaseDetail(selectedCase);
+          }
         } else {
           setError(res.error || 'Failed to record note.');
         }
@@ -142,6 +359,19 @@ export default function StaffWorkspace({ onNavigate }) {
       setError(err.message || 'An error occurred.');
     }
     setSubmittingAction(false);
+  };
+
+  // Open Full Case Details & Audit Timeline Drawer
+  const handleOpenCaseDetail = async (item) => {
+    setInspectingCase(item);
+    setDetailLoading(true);
+    const res = await fetchOperationalComplaintDetail(item.reference_no);
+    if (res.success && res.data) {
+      setCaseDetail(res.data);
+    } else {
+      setCaseDetail(null);
+    }
+    setDetailLoading(false);
   };
 
   // Workload tallies
@@ -188,7 +418,7 @@ export default function StaffWorkspace({ onNavigate }) {
       )}
 
       {error && (
-        <Notice variant="danger" title="Operational Warning">
+        <Notice variant="danger" title="Operational Notice">
           {error}
         </Notice>
       )}
@@ -308,9 +538,9 @@ export default function StaffWorkspace({ onNavigate }) {
                   <th className="px-3 py-3 font-semibold w-[200px]">Issue Details</th>
                   <th className="px-3 py-3 font-semibold w-[170px]">Location</th>
                   <th className="px-3 py-3 font-semibold w-[160px]">Assignment & Priority</th>
-                  <th className="px-3 py-3 font-semibold w-[130px]">Status</th>
+                  <th className="px-3 py-3 font-semibold w-[140px]">Status</th>
                   <th className="px-3 py-3 font-semibold w-[100px] whitespace-nowrap">AI Estimate</th>
-                  <th className="px-5 py-3 font-semibold text-right w-[210px] whitespace-nowrap">Workflow Actions</th>
+                  <th className="px-5 py-3 font-semibold text-right w-[240px] whitespace-nowrap">Workflow Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#ECEAE2]">
@@ -323,11 +553,12 @@ export default function StaffWorkspace({ onNavigate }) {
                     <tr key={item.id} className="hover:bg-[#F5F3ED]/80 transition-colors">
                       <td className="px-5 py-3 font-mono font-semibold text-[#254A40] whitespace-nowrap">
                         <button
-                          onClick={() => onNavigate && onNavigate('track', item.reference_no)}
-                          className="hover:underline text-left cursor-pointer"
-                          title={`Track ${item.reference_no}`}
+                          onClick={() => handleOpenCaseDetail(item)}
+                          className="hover:underline text-left cursor-pointer flex items-center gap-1"
+                          title={`Inspect ${item.reference_no}`}
                         >
-                          {item.reference_no}
+                          <span>{item.reference_no}</span>
+                          <Eye className="w-3 h-3 text-[#68716A]" />
                         </button>
                       </td>
                       <td className="px-3 py-3 font-medium text-[#252C29] max-w-[200px]">
@@ -365,7 +596,17 @@ export default function StaffWorkspace({ onNavigate }) {
                         </div>
                       </td>
                       <td className="px-3 py-3 whitespace-nowrap">
-                        <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-[#254A40]/10 text-[#254A40] inline-block">
+                        <span className={`px-2 py-0.5 rounded text-[11px] font-medium inline-block ${
+                          item.status === 'Resolved - Pending Verification'
+                            ? 'bg-[#367454]/15 text-[#367454] border border-[#367454]/30'
+                            : item.status === 'In Progress'
+                            ? 'bg-[#254A40]/10 text-[#254A40]'
+                            : item.status === 'On Hold'
+                            ? 'bg-[#8F6A2A]/15 text-[#8F6A2A]'
+                            : item.status === 'Closed'
+                            ? 'bg-[#68716A]/15 text-[#68716A]'
+                            : 'bg-[#ECEAE2] text-[#68716A]'
+                        }`}>
                           {item.status}
                         </span>
                       </td>
@@ -413,11 +654,7 @@ export default function StaffWorkspace({ onNavigate }) {
                               <Button
                                 size="xs"
                                 variant="primary"
-                                onClick={() => {
-                                  setSelectedCase(item);
-                                  setModalType('resolve');
-                                  setResolutionNotes('');
-                                }}
+                                onClick={() => handleOpenResolveModal(item)}
                               >
                                 <CheckCircle2 className="w-3 h-3 mr-1" /> Report Complete
                               </Button>
@@ -436,7 +673,7 @@ export default function StaffWorkspace({ onNavigate }) {
 
                           {isAssignedToMe && item.status === 'Resolved - Pending Verification' && (
                             <span className="text-[11px] text-[#367454] font-medium bg-[#367454]/10 px-2 py-0.5 rounded">
-                              Pending Verification
+                              Pending Admin Review
                             </span>
                           )}
 
@@ -461,12 +698,12 @@ export default function StaffWorkspace({ onNavigate }) {
                             <FileText className="w-3.5 h-3.5" />
                           </Button>
 
-                          {/* Track / Inspect Link */}
+                          {/* Inspect Detail Button */}
                           <Button
                             size="xs"
                             variant="ghost"
-                            title="View Public Tracker"
-                            onClick={() => onNavigate && onNavigate('track', item.reference_no)}
+                            title="Inspect Case Details & Timeline"
+                            onClick={() => handleOpenCaseDetail(item)}
                           >
                             <ChevronRight className="w-3.5 h-3.5" />
                           </Button>
@@ -481,17 +718,303 @@ export default function StaffWorkspace({ onNavigate }) {
         )}
       </Card>
 
-      {/* Modal Dialog for Hold / Resolve / Note */}
+      {/* Case Details & Audit Timeline Drawer / Modal */}
+      {inspectingCase && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="bg-white border border-[#DCDDD4] rounded-xl max-w-2xl w-full p-6 space-y-5 shadow-2xl my-8 max-h-[90vh] overflow-y-auto">
+            {/* Drawer Header */}
+            <div className="flex items-start justify-between pb-3 border-b border-[#DCDDD4]">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm font-bold text-[#254A40]">
+                    {inspectingCase.reference_no}
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                    inspectingCase.priority === 'Emergency'
+                      ? 'bg-[#B4483E]/15 text-[#B4483E]'
+                      : inspectingCase.priority === 'High'
+                      ? 'bg-[#C59A52]/15 text-[#8F6A2A]'
+                      : 'bg-[#ECEAE2] text-[#68716A]'
+                  }`}>
+                    {inspectingCase.priority} Priority
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-[#254A40]/10 text-[#254A40]">
+                    {inspectingCase.status}
+                  </span>
+                </div>
+                <h3 className="text-base font-serif font-bold text-[#252C29] mt-1">
+                  {inspectingCase.problem}
+                </h3>
+                <span className="text-xs text-[#68716A]">
+                  {inspectingCase.problem_detail} — {inspectingCase.incident_address}, {inspectingCase.borough}
+                </span>
+              </div>
+              <button
+                onClick={() => setInspectingCase(null)}
+                className="text-[#68716A] hover:text-[#252C29] p-1 rounded cursor-pointer"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {detailLoading ? (
+              <div className="py-8 text-center text-xs text-[#68716A]">
+                Loading complaint details and timeline...
+              </div>
+            ) : caseDetail ? (
+              <div className="space-y-4">
+                {/* Check for Admin Rejection in History */}
+                {(() => {
+                  const hist = caseDetail.history || [];
+                  const lastRej = [...hist].reverse().find((h) => h.action === 'Resolution Rejected');
+                  if (lastRej && caseDetail.complaint.status === 'In Progress') {
+                    return (
+                      <div className="p-3.5 bg-[#C59A52]/15 border border-[#C59A52]/40 rounded-lg text-xs space-y-1">
+                        <div className="font-semibold text-[#8F6A2A] flex items-center gap-1.5">
+                          <AlertTriangle className="w-4 h-4 text-[#8F6A2A]" />
+                          Action Required: Admin Rejected Previous Resolution
+                        </div>
+                        <p className="text-[#252C29]">
+                          <strong>Rejection Reason:</strong> {lastRej.comment || 'Field rework required.'}
+                        </p>
+                        <span className="text-[11px] text-[#68716A] block">
+                          Recorded on {lastRej.created_at} by {lastRej.actor_name}. Please perform field corrections and submit fresh evidence.
+                        </span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {/* Complaint Meta Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 p-3 bg-[#F5F3ED] rounded-lg text-xs">
+                  <div>
+                    <span className="text-[11px] text-[#68716A] block">Department</span>
+                    <span className="font-semibold text-[#252C29]">{caseDetail.complaint.assigned_department || 'Unassigned'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-[#68716A] block">Assigned Officer</span>
+                    <span className="font-semibold text-[#252C29]">{caseDetail.complaint.assigned_staff_name || 'Unassigned'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-[#68716A] block">Channel</span>
+                    <span className="font-semibold text-[#252C29]">{caseDetail.complaint.channel || 'ONLINE'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-[#68716A] block">Reported On</span>
+                    <span className="font-semibold text-[#252C29]">{caseDetail.complaint.created_at}</span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-[#68716A] block">AI Turnaround Estimate</span>
+                    <span className="font-semibold font-mono text-[#254A40]">
+                      ~{caseDetail.complaint.predicted_duration_hours ? caseDetail.complaint.predicted_duration_hours.toFixed(1) : '—'} hrs
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-[#68716A] block">Coordinates</span>
+                    <span className="font-mono text-[#252C29]">
+                      {caseDetail.complaint.latitude ? `${caseDetail.complaint.latitude.toFixed(4)}, ${caseDetail.complaint.longitude.toFixed(4)}` : 'None'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Description */}
+                <div>
+                  <h4 className="text-xs font-semibold text-[#252C29] mb-1">Citizen Description</h4>
+                  <p className="text-xs text-[#252C29] p-3 bg-white border border-[#DCDDD4] rounded-md">
+                    {caseDetail.complaint.description || 'No description provided.'}
+                  </p>
+                </div>
+
+                {/* Completion Details (if present) */}
+                {caseDetail.complaint.resolution_notes && (
+                  <div className="p-3 bg-[#367454]/10 border border-[#367454]/30 rounded-lg text-xs space-y-1">
+                    <span className="font-semibold text-[#367454] block">Field Completion Report</span>
+                    <p className="text-[#252C29]">{caseDetail.complaint.resolution_notes}</p>
+                    {caseDetail.complaint.completion_details && (
+                      <p className="text-[#68716A] text-[11px]">
+                        <strong>Technical Details:</strong> {caseDetail.complaint.completion_details}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Uploaded Evidence Gallery (Phase 3 Stage 2 Authenticated Viewing) */}
+                {caseDetail.evidence && caseDetail.evidence.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold text-[#252C29] mb-2 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <ImageIcon className="w-3.5 h-3.5 text-[#254A40]" />
+                        Completion Evidence Photos ({caseDetail.evidence.length})
+                      </span>
+                      <span className="text-[11px] text-[#68716A] font-normal">Click photo to zoom</span>
+                    </h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {caseDetail.evidence.map((ev) => (
+                        <div
+                          key={ev.id}
+                          onClick={() => setZoomedImage(ev)}
+                          className="group relative border border-[#DCDDD4] rounded-lg overflow-hidden bg-black/5 hover:border-[#254A40] transition-colors cursor-pointer"
+                        >
+                          <AuthenticatedImage
+                            evidenceId={ev.id}
+                            alt={ev.original_filename}
+                            className="w-full h-24 object-cover group-hover:scale-105 transition-transform"
+                          />
+                          <div className="p-1.5 bg-white text-[10px] space-y-0.5">
+                            <span className="truncate block font-medium text-[#252C29]" title={ev.original_filename}>
+                              {ev.original_filename}
+                            </span>
+                            <span className="text-[#68716A] block">
+                              {(ev.file_size / 1024).toFixed(0)} KB • {ev.created_at ? ev.created_at.substring(5, 16) : ''}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Chronological Audit Timeline */}
+                <div>
+                  <h4 className="text-xs font-semibold text-[#252C29] mb-2">Audit History Timeline</h4>
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {(caseDetail.history || []).map((h) => (
+                      <div key={h.id} className="p-2.5 bg-white border border-[#DCDDD4] rounded-md text-xs space-y-1">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-semibold text-[#254A40]">{h.action}</span>
+                          <span className="text-[#68716A] font-mono">{h.created_at}</span>
+                        </div>
+                        {h.comment && (
+                          <p className="text-[#252C29] text-[11px]">{h.comment}</p>
+                        )}
+                        <span className="text-[10px] text-[#68716A] block">
+                          by {h.actor_name} ({h.actor_role})
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Workflow Actions from Drawer */}
+                <div className="pt-3 border-t border-[#DCDDD4] flex flex-wrap items-center justify-end gap-2">
+                  {caseDetail.complaint.assigned_staff_id === user?.id && caseDetail.complaint.status === 'Assigned' && (
+                    <Button size="sm" variant="primary" onClick={() => handleStartWork(caseDetail.complaint)}>
+                      <Play className="w-3.5 h-3.5 mr-1" /> Start Work
+                    </Button>
+                  )}
+                  {caseDetail.complaint.assigned_staff_id === user?.id && caseDetail.complaint.status === 'On Hold' && (
+                    <Button size="sm" variant="primary" onClick={() => handleResumeWork(caseDetail.complaint)}>
+                      <Play className="w-3.5 h-3.5 mr-1" /> Resume Work
+                    </Button>
+                  )}
+                  {caseDetail.complaint.assigned_staff_id === user?.id && caseDetail.complaint.status === 'In Progress' && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setSelectedCase(caseDetail.complaint);
+                          setModalType('hold');
+                        }}
+                      >
+                        <Pause className="w-3.5 h-3.5 mr-1" /> Put On Hold
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => handleOpenResolveModal(caseDetail.complaint)}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Report Complete & Upload Evidence
+                      </Button>
+                    </>
+                  )}
+                  {caseDetail.complaint.status === 'Resolved - Pending Verification' && (
+                    <span className="text-xs text-[#367454] bg-[#367454]/10 px-3 py-1.5 rounded-md font-medium flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4" /> Awaiting Administrative Verification & Closure
+                    </span>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      if (onNavigate) {
+                        onNavigate('track', caseDetail.complaint.reference_no);
+                      }
+                    }}
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 mr-1" /> Public Tracker
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="py-8 text-center text-xs text-[#B4483E]">
+                Failed to load case details.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Zoomed Image Lightbox */}
+      {zoomedImage && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
+          onClick={() => setZoomedImage(null)}
+        >
+          <div className="max-w-3xl w-full bg-white rounded-xl overflow-hidden shadow-2xl p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-[#DCDDD4] pb-2">
+              <span className="text-xs font-semibold text-[#252C29] truncate">
+                {zoomedImage.original_filename}
+              </span>
+              <button
+                onClick={() => setZoomedImage(null)}
+                className="text-[#68716A] hover:text-[#252C29] p-1 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex justify-center bg-black/5 rounded-lg overflow-hidden max-h-[70vh]">
+              <AuthenticatedImage
+                evidenceId={zoomedImage.id}
+                alt={zoomedImage.original_filename}
+                className="max-h-[70vh] object-contain w-auto h-auto"
+              />
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-[#68716A] pt-1">
+              <span>Size: {(zoomedImage.file_size / 1024).toFixed(0)} KB</span>
+              <span>Uploaded: {zoomedImage.created_at}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main Operational Action Modal (Hold, Note, or Phase 3 Stage 2 Evidence Upload) */}
       {modalType && selectedCase && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-          <div className="bg-white border border-[#DCDDD4] rounded-xl max-w-md w-full p-6 space-y-4 shadow-xl">
-            <h3 className="text-base font-serif font-bold text-[#252C29]">
-              {modalType === 'hold' && `Pause Work: ${selectedCase.reference_no}`}
-              {modalType === 'resolve' && `Report Completion: ${selectedCase.reference_no}`}
-              {modalType === 'note' && `Add Note: ${selectedCase.reference_no}`}
-            </h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="bg-white border border-[#DCDDD4] rounded-xl max-w-lg w-full p-6 space-y-4 shadow-2xl my-8 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between border-b border-[#DCDDD4] pb-3">
+              <div>
+                <h3 className="text-base font-serif font-bold text-[#252C29]">
+                  {modalType === 'hold' && `Pause Work: ${selectedCase.reference_no}`}
+                  {modalType === 'resolve' && `Field Completion & Evidence: ${selectedCase.reference_no}`}
+                  {modalType === 'note' && `Add Progress Note: ${selectedCase.reference_no}`}
+                </h3>
+                <span className="text-xs text-[#68716A]">
+                  {selectedCase.problem} • {selectedCase.incident_address}
+                </span>
+              </div>
+              <button
+                onClick={() => setModalType(null)}
+                className="text-[#68716A] hover:text-[#252C29] p-1 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
             <form onSubmit={handleModalSubmit} className="space-y-4">
+              {/* Case 1: Hold Modal */}
               {modalType === 'hold' && (
                 <>
                   <div>
@@ -521,25 +1044,211 @@ export default function StaffWorkspace({ onNavigate }) {
                 </>
               )}
 
+              {/* Case 2: Phase 3 Stage 2 Completion Evidence Upload Form */}
               {modalType === 'resolve' && (
-                <div>
-                  <label className="block text-xs font-semibold text-[#252C29] mb-1">
-                    Field Resolution Report <span className="text-[#B4483E]">*</span>
-                  </label>
-                  <textarea
-                    value={resolutionNotes}
-                    onChange={(e) => setResolutionNotes(e.target.value)}
-                    rows={4}
-                    placeholder="Document exact operational work completed (e.g. Summons issued, vehicle towed, pavement compacted, sewer unclogged)..."
-                    className="w-full text-xs px-3 py-2 bg-white border border-[#DCDDD4] rounded-md focus:border-[#254A40] text-[#252C29]"
-                    required
-                  />
-                  <span className="text-[11px] text-[#68716A] block mt-1">
-                    Once submitted, this complaint will be queued for Admin verification and final closure.
-                  </span>
+                <div className="space-y-4">
+                  {/* Prominent Admin Rejection Alert if applicable */}
+                  {rejectionNotice && (
+                    <div className="p-3 bg-[#C59A52]/15 border border-[#C59A52]/40 rounded-lg text-xs space-y-1">
+                      <div className="font-semibold text-[#8F6A2A] flex items-center gap-1.5">
+                        <AlertTriangle className="w-4 h-4 text-[#8F6A2A]" />
+                        Admin Rework Instructions
+                      </div>
+                      <p className="text-[#252C29]">
+                        <strong>Previous Rejection Reason:</strong> {rejectionNotice.reason}
+                      </p>
+                      <span className="text-[11px] text-[#68716A] block">
+                        Rejected on {rejectionNotice.date}. Please perform necessary field corrections and upload new evidence photos below.
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Prior Evidence Thumbnails if rework */}
+                  {priorEvidence.length > 0 && (
+                    <div>
+                      <span className="text-[11px] font-semibold text-[#68716A] block mb-1">
+                        Previously Uploaded Evidence ({priorEvidence.length})
+                      </span>
+                      <div className="flex gap-2 overflow-x-auto pb-1">
+                        {priorEvidence.map((ev) => (
+                          <div key={ev.id} className="w-16 h-16 shrink-0 rounded border border-[#DCDDD4] overflow-hidden">
+                            <AuthenticatedImage
+                              evidenceId={ev.id}
+                              alt={ev.original_filename}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Required Work Report Notes */}
+                  <div>
+                    <label className="block text-xs font-semibold text-[#252C29] mb-1">
+                      Field Resolution Report <span className="text-[#B4483E]">*</span>
+                    </label>
+                    <textarea
+                      value={resolutionNotes}
+                      onChange={(e) => setResolutionNotes(e.target.value)}
+                      rows={3}
+                      placeholder="Detail exact corrective actions completed (e.g. Cleared 2 catch basins, resurfaced 15 ft of asphalt, tested drainage flow)..."
+                      className="w-full text-xs px-3 py-2 bg-white border border-[#DCDDD4] rounded-md focus:border-[#254A40] text-[#252C29]"
+                      required
+                      minLength={5}
+                    />
+                    <div className="flex items-center justify-between text-[11px] text-[#68716A] mt-1">
+                      <span>Minimum 5 characters required</span>
+                      <span>{resolutionNotes.length} characters</span>
+                    </div>
+                  </div>
+
+                  {/* Optional Technical Details */}
+                  <div>
+                    <label className="block text-xs font-semibold text-[#252C29] mb-1">
+                      Technical Completion Details (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={completionDetails}
+                      onChange={(e) => setCompletionDetails(e.target.value)}
+                      placeholder="e.g. Work Order #4092, Crew of 3, 1.5 tons asphalt, Water pressure 65 psi"
+                      className="w-full text-xs px-3 py-2 bg-white border border-[#DCDDD4] rounded-md focus:border-[#254A40] text-[#252C29]"
+                    />
+                  </div>
+
+                  {/* 1–5 Photos Upload Section */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-semibold text-[#252C29]">
+                        Completion Evidence Photos <span className="text-[#B4483E]">*</span>
+                      </label>
+                      <span className="text-[11px] text-[#68716A]">
+                        {evidencePhotos.length}/5 photos attached
+                      </span>
+                    </div>
+
+                    {photoError && (
+                      <div className="p-2 mb-2 bg-[#B4483E]/10 border border-[#B4483E]/30 rounded text-xs text-[#B4483E] flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{photoError}</span>
+                      </div>
+                    )}
+
+                    {/* Previews Grid */}
+                    {evidencePhotos.length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2">
+                        {evidencePhotos.map((item, idx) => (
+                          <div key={idx} className="relative group border border-[#DCDDD4] rounded-lg overflow-hidden bg-black/5">
+                            <img
+                              src={item.previewUrl}
+                              alt={item.name}
+                              className="w-full h-20 object-cover"
+                            />
+                            <div className="p-1 bg-white text-[10px] flex items-center justify-between">
+                              <span className="truncate max-w-[80px]" title={item.name}>{item.name}</span>
+                              <span className="text-[#68716A]">{item.size}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemovePhoto(idx)}
+                              className="absolute top-1 right-1 bg-black/60 hover:bg-[#B4483E] text-white p-1 rounded-full cursor-pointer transition-colors"
+                              title="Remove photo"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* File Input Box */}
+                    {evidencePhotos.length < 5 && (
+                      <label className="border-2 border-dashed border-[#DCDDD4] hover:border-[#254A40] rounded-lg p-4 flex flex-col items-center justify-center cursor-pointer bg-[#F5F3ED]/50 transition-colors">
+                        <Upload className="w-5 h-5 text-[#68716A] mb-1" />
+                        <span className="text-xs font-medium text-[#254A40]">
+                          Choose Photos (1–5 required)
+                        </span>
+                        <span className="text-[10px] text-[#68716A] mt-0.5">
+                          JPEG, PNG, or WEBP up to 5 MB each
+                        </span>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          multiple
+                          accept="image/jpeg,image/png,image/webp"
+                          onChange={handlePhotoSelect}
+                          className="hidden"
+                        />
+                      </label>
+                    )}
+                  </div>
+
+                  {/* Resolution GPS Capture (Optional) */}
+                  <div className="p-3 bg-[#ECEAE2]/40 border border-[#DCDDD4] rounded-lg space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-[#252C29] flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-[#254A40]" />
+                        Resolution GPS Location
+                      </span>
+                      {resolutionGps ? (
+                        <button
+                          type="button"
+                          onClick={() => setResolutionGps(null)}
+                          className="text-[11px] text-[#B4483E] hover:underline cursor-pointer"
+                        >
+                          Clear GPS
+                        </button>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          onClick={handleDetectResolutionLocation}
+                          disabled={detectingGps}
+                        >
+                          {detectingGps ? (
+                            <>
+                              <RefreshCw className="w-3 h-3 mr-1 animate-spin" /> Detecting...
+                            </>
+                          ) : (
+                            <>
+                              <MapPin className="w-3 h-3 mr-1" /> Capture GPS
+                            </>
+                          )}
+                        </Button>
+                      )}
+                    </div>
+
+                    {resolutionGps ? (
+                      <div className="text-xs text-[#254A40] font-mono bg-white p-2 rounded border border-[#DCDDD4]">
+                        Lat: {resolutionGps.latitude}, Lon: {resolutionGps.longitude}
+                        {resolutionGps.accuracy && ` (±${resolutionGps.accuracy}m)`}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-[#68716A]">
+                        Optional: Capturing your current location verifies on-site proximity to the reported incident address.
+                      </p>
+                    )}
+
+                    {gpsError && (
+                      <p className="text-[11px] text-[#B4483E]">{gpsError}</p>
+                    )}
+                  </div>
+
+                  {/* Verification Workflow Advisory Notice */}
+                  <div className="p-3 bg-[#254A40]/10 border border-[#254A40]/20 rounded-lg text-xs space-y-1">
+                    <span className="font-semibold text-[#254A40] flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4" /> Two-Party Verification Workflow
+                    </span>
+                    <p className="text-[#252C29]">
+                      Once submitted, this ticket transitions to <strong>Resolved – Pending Verification</strong>. Only an authorized operations administrator can inspect evidence and approve official closure.
+                    </p>
+                  </div>
                 </div>
               )}
 
+              {/* Case 3: Note Modal */}
               {modalType === 'note' && (
                 <>
                   <div>
@@ -570,12 +1279,13 @@ export default function StaffWorkspace({ onNavigate }) {
                 </>
               )}
 
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="flex justify-end gap-2 pt-2 border-t border-[#DCDDD4]">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => setModalType(null)}
+                  disabled={submittingAction}
                 >
                   Cancel
                 </Button>
@@ -585,7 +1295,16 @@ export default function StaffWorkspace({ onNavigate }) {
                   size="sm"
                   disabled={submittingAction}
                 >
-                  {submittingAction ? 'Saving...' : 'Submit Action'}
+                  {submittingAction ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 mr-1 animate-spin" />
+                      Submitting...
+                    </>
+                  ) : modalType === 'resolve' ? (
+                    'Submit Completion Evidence'
+                  ) : (
+                    'Save Action'
+                  )}
                 </Button>
               </div>
             </form>
